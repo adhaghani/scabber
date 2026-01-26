@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-multipart
+websockets
+numpy
+sounddevice
+torch
+julius
+sphn
+pocket-tts
+pyttsx3
+# transformers
+# accelerate
+openai-whisper
+tiktoken
