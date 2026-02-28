@@ -2,26 +2,30 @@
 Configuration settings for Voice AI Assistant
 """
 import os
+from pathlib import Path
 
-# Model Settings
+# Load .env file if present (never overrides already-exported shell vars)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
+except ImportError:
+    pass  # python-dotenv not installed yet; rely on shell env vars
+
 # Model Settings
 WHISPER_MODEL_ID = "tiny"  # OpenAI Whisper model (offline)
-LLM_MODEL = "qwen3:0.6b"  # Better quality small model
-OLLAMA_MODEL = "qwen3:0.6b"  # For Ollama mode (fast, simple questions)
-SMART_MODEL = "qwen3:4b"  # Smarter model for complex questions
-USE_OLLAMA = True  # Use Ollama instead of HuggingFace transformers
+LLM_MODEL = "arcee-ai/trinity-mini:free"  # Default model displayed in logs
+OPENROUTER_MODEL = "arcee-ai/trinity-mini:free"  # Fast model for simple questions
+SMART_MODEL = "arcee-ai/trinity-mini:free"  # Smarter model for complex questions
+USE_OPENROUTER = True  # Use OpenRouter instead of HuggingFace transformers
+
+# OpenRouter API Settings
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "http://localhost")
+OPENROUTER_SITE_NAME = os.getenv("OPENROUTER_SITE_NAME", "Scabber Voice Assistant")
 
 # Complexity Detection - keywords that suggest a complex question
-COMPLEXITY_KEYWORDS = [
-    "explain", "why", "how does", "what is the difference",
-    "compare", "analyze", "calculate", "solve", "prove",
-    "describe in detail", "step by step", "elaborate",
-    "complex", "complicated", "difficult", "advanced",
-    "algorithm", "mathematics", "physics", "chemistry",
-    "philosophy", "theory", "concept", "principle",
-    "code", "program", "implement", "debug", "optimize",
-    "summarize", "research", "history of", "origins of"
-]
+COMPLEXITY_KEYWORDS = []
 
 # Thinking phrases for the small model while loading smart model
 THINKING_PHRASES = [
@@ -73,7 +77,8 @@ TTS_MAX_TOKENS = 2048  # Max audio tokens per utterance (~160 seconds max)
 SYSTEM_PROMPT = """You are an AI assistant engaged in a voice conversation. 
 Keep your responses concise, as they will be spoken aloud.
 Be helpful and natural in your responses. only ask further clarification or questions when asked to.
-IMPORTANT: Never use emojis, asterisks, markdown formatting, or special symbols in your responses. Use plain AND Spaces text only."""
+IMPORTANT: Never use emojis, asterisks, markdown formatting, or special symbols in your responses. Never use questions like "please list" or anything that is hard to do via voice.
+Use plain AND Spaces text only."""
 
 # System Prompt for smart model (detailed, thorough responses)
 SMART_SYSTEM_PROMPT = """You are an expert AI assistant in deep thinking mode, engaged in a voice conversation.

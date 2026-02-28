@@ -9,6 +9,8 @@ julius
 sphn
 pocket-tts
 pyttsx3
+python-dotenv
+requests
 # transformers
 # accelerate
 openai-whisper

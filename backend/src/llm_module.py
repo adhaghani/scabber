@@ -1,6 +1,6 @@
 """
 Language Model Module for response generation
-Supports both Ollama and HuggingFace transformers
+Supports both OpenRouter and HuggingFace transformers
 """
 import requests
 import json
@@ -10,15 +10,20 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import (
-    LLM_MODEL, OLLAMA_MODEL, USE_OLLAMA, SMART_MODEL,
-    MAX_NEW_TOKENS, SMART_MODEL_MAX_TOKENS, TEMPERATURE, TOP_P, 
+    LLM_MODEL, OPENROUTER_MODEL, USE_OPENROUTER, SMART_MODEL,
+    MAX_NEW_TOKENS, SMART_MODEL_MAX_TOKENS, TEMPERATURE, TOP_P,
     SYSTEM_PROMPT, SMART_SYSTEM_PROMPT,
-    COMPLEXITY_KEYWORDS, THINKING_PHRASES
+    COMPLEXITY_KEYWORDS, THINKING_PHRASES,
+    OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_SITE_NAME
 )
+try:
+    from .openrouter_client import OpenRouterClient   # package import (main.py)
+except ImportError:
+    from openrouter_client import OpenRouterClient    # direct script execution
 
 
 class LanguageModel:
-    """Language Model for generating responses using Ollama"""
+    """Language Model for generating responses using OpenRouter"""
     
     @staticmethod
     def clean_chunk(text: str) -> str:
@@ -106,17 +111,17 @@ class LanguageModel:
     
     def __init__(
         self,
-        model_name: str = OLLAMA_MODEL,
-        use_ollama: bool = USE_OLLAMA
+        model_name: str = OPENROUTER_MODEL,
+        use_openrouter: bool = USE_OPENROUTER
     ):
         self.model_name = model_name
         self.base_model_name = model_name  # Store the base (fast) model name
         self.smart_model_name = SMART_MODEL  # Smart model for complex questions
-        self.use_ollama = use_ollama
-        self.ollama_url = "http://localhost:11434/api/chat"
+        self.use_openrouter = use_openrouter
         self.conversation_history: List[Dict[str, str]] = []
         self.is_loaded = False
         self.smart_model_loaded = False  # Track if smart model is currently active
+        self._client: Optional[OpenRouterClient] = None  # Initialised in load()
         
     def is_complex_question(self, user_input: str) -> bool:
         """
@@ -138,34 +143,21 @@ Reply with ONLY one word: "COMPLEX" if this question requires detailed explanati
 Your answer:"""
 
         try:
-            payload = {
-                "model": self.base_model_name,
-                "messages": [{"role": "user", "content": evaluation_prompt}],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temperature for consistent evaluation
-                    "num_predict": 10  # We only need one word
-                }
-            }
-            
-            response = requests.post(
-                self.ollama_url,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                answer = result.get('message', {}).get('content', '').strip().upper()
-                
-                # Check if AI thinks it's complex
-                is_complex = "COMPLEX" in answer
-                
-                if is_complex:
-                    print(f"🤔 AI assessed: This question needs deeper thinking")
-                
-                return is_complex
-            
+            answer = self._client.chat_complete(
+                model=self.base_model_name,
+                messages=[{"role": "user", "content": evaluation_prompt}],
+                temperature=0.1,
+                max_tokens=10,
+                timeout=30,
+            ).strip().upper()
+
+            is_complex = "COMPLEX" in answer
+
+            if is_complex:
+                print(f"🤔 AI assessed: This question needs deeper thinking")
+
+            return is_complex
+
         except Exception as e:
             print(f"⚠️ Complexity check failed: {e}")
         
@@ -188,39 +180,17 @@ Your answer:"""
         if self.smart_model_loaded:
             return True
             
-        print(f"🧠 Loading smart model: {self.smart_model_name}")
-        
+        print(f"🧠 Switching to smart model: {self.smart_model_name}")
+
         try:
-            # Check if smart model is available
-            response = requests.get("http://localhost:11434/api/tags", timeout=5)
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                model_names = [m['name'] for m in models]
-                
-                # Check if smart model exists
-                if not any(self.smart_model_name in m for m in model_names):
-                    print(f"   Smart model not found. Pulling {self.smart_model_name}...")
-                    # Trigger model pull
-                    pull_response = requests.post(
-                        "http://localhost:11434/api/pull",
-                        json={"name": self.smart_model_name},
-                        timeout=300  # 5 minute timeout for download
-                    )
-                    if pull_response.status_code != 200:
-                        print(f"❌ Failed to pull smart model")
-                        return False
-                
-                # Switch to smart model
-                self.model_name = self.smart_model_name
-                self.smart_model_loaded = True
-                print(f"✅ Smart model ready: {self.smart_model_name}")
-                return True
-                
+            # With OpenRouter, models are served remotely — no local pull needed.
+            self.model_name = self.smart_model_name
+            self.smart_model_loaded = True
+            print(f"✅ Smart model ready: {self.smart_model_name}")
+            return True
         except Exception as e:
-            print(f"❌ Error loading smart model: {e}")
+            print(f"❌ Error switching to smart model: {e}")
             return False
-            
-        return False
     
     def unload_smart_model(self) -> None:
         """Switch back to the fast base model"""
@@ -267,36 +237,22 @@ Your answer:"""
         # Use higher token limit for smart model
         num_predict = SMART_MODEL_MAX_TOKENS if is_smart else MAX_NEW_TOKENS
         
-        payload = {
-            "model": model_name,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": num_predict  # Max tokens to generate
-            }
-        }
-        
         try:
-            response = requests.post(
-                self.ollama_url,
-                json=payload,
-                timeout=180  # 3 minute timeout for smart model
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                assistant_message = result.get('message', {}).get('content', '').strip()
-                assistant_message = self.clean_response(assistant_message)
-                
-                if use_history and assistant_message:
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": assistant_message})
-                
-                return assistant_message
-            else:
-                return "I'm sorry, I encountered an error generating a response."
-                
+            assistant_message = self._client.chat_complete(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=num_predict,
+                timeout=180,
+            ).strip()
+            assistant_message = self.clean_response(assistant_message)
+
+            if use_history and assistant_message:
+                self.conversation_history.append({"role": "user", "content": user_input})
+                self.conversation_history.append({"role": "assistant", "content": assistant_message})
+
+            return assistant_message
+
         except requests.exceptions.Timeout:
             return "I'm sorry, the response took too long. Please try again."
         except Exception as e:
@@ -304,39 +260,30 @@ Your answer:"""
             return "I'm sorry, I encountered an error."
         
     def load(self) -> None:
-        """Verify Ollama is running and model is available"""
+        """Verify OpenRouter API key is configured and initialise the client."""
         print(f"🧠 Loading Language Model: {self.model_name}")
-        
-        if self.use_ollama:
-            print("   Using Ollama backend")
-            
-            # Check if Ollama is running
-            try:
-                response = requests.get("http://localhost:11434/api/tags", timeout=5)
-                if response.status_code == 200:
-                    models = response.json().get('models', [])
-                    model_names = [m['name'].split(':')[0] for m in models]
-                    
-                    # Check if our model is available
-                    if self.model_name.split(':')[0] in model_names or any(self.model_name in m['name'] for m in models):
-                        print(f"✅ Model '{self.model_name}' is available")
-                        self.is_loaded = True
-                    else:
-                        print(f"⚠️  Model '{self.model_name}' not found. Available models: {model_names}")
-                        print(f"   Run: ollama pull {self.model_name}")
-                        # Try to use the model anyway, Ollama might auto-pull
-                        self.is_loaded = True
-                else:
-                    raise ConnectionError("Ollama API returned error")
-                    
-            except requests.exceptions.ConnectionError:
-                print("❌ Ollama is not running!")
-                print("   Start Ollama with: ollama serve")
-                raise RuntimeError("Ollama server not running. Start with 'ollama serve'")
+
+        if self.use_openrouter:
+            print("   Using OpenRouter backend")
+
+            if not OPENROUTER_API_KEY:
+                raise RuntimeError(
+                    "OPENROUTER_API_KEY is not set. "
+                    "Export it with: export OPENROUTER_API_KEY=sk-or-..."
+                )
+
+            self._client = OpenRouterClient(
+                api_key=OPENROUTER_API_KEY,
+                base_url=OPENROUTER_BASE_URL,
+                site_url=OPENROUTER_SITE_URL,
+                site_name=OPENROUTER_SITE_NAME,
+            )
+            print(f"✅ OpenRouter client ready (model: {self.model_name})")
+            self.is_loaded = True
         else:
             # Load HuggingFace model (fallback)
             self._load_transformers_model()
-            
+
         print("✅ Language Model ready")
     
     def _load_transformers_model(self):
@@ -393,75 +340,52 @@ Your answer:"""
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
         
-        if self.use_ollama:
-            return self._generate_ollama(user_input, temperature, use_history)
+        if self.use_openrouter:
+            return self._generate_openrouter(user_input, temperature, use_history)
         else:
             return self._generate_transformers(user_input, max_new_tokens, temperature, top_p, use_history)
     
-    def _generate_ollama(
+    def _generate_openrouter(
         self,
         user_input: str,
         temperature: float,
         use_history: bool
     ) -> str:
-        """Generate response using Ollama API"""
-        
+        """Generate response using OpenRouter API"""
+
         # Build messages
         messages = []
-        
-        # Use appropriate system prompt based on model
         system_prompt = SMART_SYSTEM_PROMPT if self.smart_model_loaded else SYSTEM_PROMPT
         messages.append({"role": "system", "content": system_prompt})
-        
-        # Add conversation history
+
         if use_history:
             messages.extend(self.conversation_history[-6:])
-        
-        # Add current user input
+
         messages.append({"role": "user", "content": user_input})
-        
-        # Use higher token limit for smart model
-        num_predict = SMART_MODEL_MAX_TOKENS if self.smart_model_loaded else MAX_NEW_TOKENS
-        
-        # Make API request
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": num_predict  # Max tokens to generate
-            }
-        }
-        
+
+        max_tokens = SMART_MODEL_MAX_TOKENS if self.smart_model_loaded else MAX_NEW_TOKENS
+
         try:
-            response = requests.post(
-                self.ollama_url,
-                json=payload,
-                timeout=120  # 2 minute timeout for response
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                assistant_message = result.get('message', {}).get('content', '').strip()
-                
-                # Clean response (remove emojis and complex symbols)
-                assistant_message = self.clean_response(assistant_message)
-                
-                # Update conversation history
-                if use_history and assistant_message:
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": assistant_message})
-                
-                return assistant_message
-            else:
-                print(f"❌ Ollama API error: {response.status_code}")
-                return "I'm sorry, I encountered an error generating a response."
-                
+            assistant_message = self._client.chat_complete(
+                model=self.model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=120,
+            ).strip()
+
+            assistant_message = self.clean_response(assistant_message)
+
+            if use_history and assistant_message:
+                self.conversation_history.append({"role": "user", "content": user_input})
+                self.conversation_history.append({"role": "assistant", "content": assistant_message})
+
+            return assistant_message
+
         except requests.exceptions.Timeout:
             return "I'm sorry, the response took too long. Please try again."
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ OpenRouter API error: {e}")
             return "I'm sorry, I encountered an error."
     
     def generate_response_stream(
@@ -484,72 +408,45 @@ Your answer:"""
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
         
-        if not self.use_ollama:
+        if not self.use_openrouter:
             # Fallback to non-streaming for transformers
             yield self._generate_transformers(user_input, MAX_NEW_TOKENS, temperature, TOP_P, use_history)
             return
-        
+
         # Build messages
         messages = []
-        
-        # Use appropriate system prompt based on model
         system_prompt = SMART_SYSTEM_PROMPT if self.smart_model_loaded else SYSTEM_PROMPT
         messages.append({"role": "system", "content": system_prompt})
-        
+
         if use_history:
             messages.extend(self.conversation_history[-6:])
-        
+
         messages.append({"role": "user", "content": user_input})
-        
-        # Use higher token limit for smart model
-        num_predict = SMART_MODEL_MAX_TOKENS if self.smart_model_loaded else MAX_NEW_TOKENS
-        
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "stream": True,  # Enable streaming
-            "options": {
-                "temperature": temperature,
-                "num_predict": num_predict  # Max tokens to generate
-            }
-        }
-        
+
+        max_tokens = SMART_MODEL_MAX_TOKENS if self.smart_model_loaded else MAX_NEW_TOKENS
         full_response = ""
-        
+
         try:
-            response = requests.post(
-                self.ollama_url,
-                json=payload,
+            for chunk in self._client.chat_complete_stream(
+                model=self.model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 timeout=120,
-                stream=True  # Stream the HTTP response
-            )
-            
-            if response.status_code == 200:
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            if 'message' in data and 'content' in data['message']:
-                                chunk = data['message']['content']
-                                # Light cleaning - preserve spaces between words
-                                chunk = self.clean_chunk(chunk)
-                                if chunk:  # Only yield non-empty chunks
-                                    full_response += chunk
-                                    yield chunk
-                        except json.JSONDecodeError:
-                            continue
-                
-                # Update conversation history after complete
-                if use_history and full_response:
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": full_response})
-            else:
-                yield "I'm sorry, I encountered an error generating a response."
-                
+            ):
+                chunk = self.clean_chunk(chunk)
+                if chunk:
+                    full_response += chunk
+                    yield chunk
+
+            if use_history and full_response:
+                self.conversation_history.append({"role": "user", "content": user_input})
+                self.conversation_history.append({"role": "assistant", "content": full_response})
+
         except requests.exceptions.Timeout:
             yield "I'm sorry, the response took too long. Please try again."
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ OpenRouter streaming error: {e}")
             yield "I'm sorry, I encountered an error."
     
     def _generate_transformers(
