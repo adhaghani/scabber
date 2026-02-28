@@ -85,8 +85,3 @@ models/
 # Logs
 *.log
 logs/
-
-# Next.js
-node_modules/
-.next/
-public/images/
